@@ -1,0 +1,30 @@
+#!/bin/bash
+# hypr-alttab — Cliente rápido del Alt+Tab. Envía un comando al daemon
+# (hypr-alttabd) por socket UNIX usando socat (sin arranque en frío de Python).
+#
+# Uso:  hypr-alttab [next|prev|close|quit]
+#
+# Bindings:
+#   bind  = ALT, TAB,       exec, hypr-alttab
+#   bind  = ALT SHIFT, TAB, exec, hypr-alttab prev
+#   bindr = ALT, Alt_L,     exec, hypr-alttab close
+
+CMD="${1:-next}"
+SOCK="/tmp/hypr-alttab-${HYPRLAND_INSTANCE_SIGNATURE:-default}.sock"
+
+send() { printf '%s\n' "$CMD" | socat -u - "UNIX-CONNECT:$SOCK" 2>/dev/null; }
+
+if send; then
+    exit 0
+fi
+
+# El daemon no respondió. 'close' sin daemon no tiene sentido; para next/prev,
+# (re)lanzar el daemon y reintentar brevemente.
+[ "$CMD" = "close" ] && exit 0
+
+setsid -f env LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so hypr-alttabd >/dev/null 2>&1
+for _ in $(seq 1 12); do
+    sleep 0.05
+    send && exit 0
+done
+exit 1

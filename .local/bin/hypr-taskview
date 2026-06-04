@@ -1,0 +1,476 @@
+#!/usr/bin/env python3
+"""
+Hyprland Task View — Windows-style window overview with live thumbnails.
+Win+Tab: full-screen card overview.
+  - Arrow keys / Tab: navigate cards
+  - Enter:           focus selected window
+  - 1–9:             instant-pick window N
+  - Hover X button:  close window without switching
+  - Escape / click background: dismiss
+
+Design notes:
+  - Screenshots taken BEFORE GTK overlay opens (grim would capture the overlay)
+  - Focus dispatched AFTER app.run() returns (avoids GTK-close vs hyprctl race)
+  - Active window gets a green border so you always know where you were
+  - Close button uses CAPTURE-phase gesture so it doesn't trigger the card click
+"""
+
+import gi
+gi.require_version('Gtk', '4.0')
+gi.require_version('Gdk', '4.0')
+from gi.repository import Gtk, Gdk, GLib
+import subprocess, json, os, sys, tempfile, shutil, time
+
+# ── hyprland helpers ──────────────────────────────────────────────────────────
+
+def get_clients():
+    r = subprocess.run(['hyprctl', 'clients', '-j'], capture_output=True, text=True)
+    return json.loads(r.stdout) if r.returncode == 0 else []
+
+def get_active_window_addr():
+    r = subprocess.run(['hyprctl', 'activewindow', '-j'], capture_output=True, text=True)
+    try:
+        return json.loads(r.stdout).get('address', '') if r.returncode == 0 else ''
+    except Exception:
+        return ''
+
+def get_active_ws_id():
+    r = subprocess.run(['hyprctl', 'activeworkspace', '-j'], capture_output=True, text=True)
+    return json.loads(r.stdout).get('id', 1) if r.returncode == 0 else 1
+
+def screenshot(x, y, w, h, path):
+    if w < 10 or h < 10:
+        return False
+    r = subprocess.run(['grim', '-g', f'{x},{y} {w}x{h}', path], capture_output=True)
+    return r.returncode == 0 and os.path.exists(path) and os.path.getsize(path) > 100
+
+def hypr_close_window(addr):
+    subprocess.run(['hyprctl', 'dispatch', 'closewindow', f'address:{addr}'],
+                   capture_output=True)
+
+def focus_window(addr, ws_name):
+    if 'special:minimized' in ws_name:
+        cws = get_active_ws_id()
+        subprocess.run(['hyprctl', 'dispatch', 'movetoworkspace', f'{cws},address:{addr}'],
+                       capture_output=True)
+        time.sleep(0.08)
+    subprocess.run(['hyprctl', 'dispatch', 'focuswindow', f'address:{addr}'],
+                   capture_output=True)
+    subprocess.run(['hyprctl', 'dispatch', 'bringactivetotop'], capture_output=True)
+
+def alterzorder_top(addr):
+    # Sube una ventana flotante al frente SIN cambiar el foco de teclado.
+    subprocess.run(['hyprctl', 'dispatch', 'alterzorder', f'top,address:{addr}'],
+                   capture_output=True)
+
+def _grim_client(client, tmpdir, thumbs):
+    addr = client.get('address', '')
+    x, y = client.get('at',   [0, 0])
+    w, h = client.get('size', [0, 0])
+    path = os.path.join(tmpdir, f'{addr}.png')
+    if screenshot(x, y, w, h, path):
+        thumbs[addr] = path
+
+def capture_thumbnails(clients, tmpdir):
+    """Thumbnails reales por ventana.
+
+    grim captura REGIONES de pantalla, no el framebuffer de cada ventana. En el
+    flujo estilo Windows las ventanas flotantes están maximizadas y se solapan en
+    la misma región, así que grim sobre su geometría capturaría siempre la de
+    encima (thumbnails idénticos). Para evitarlo subimos cada flotante al frente
+    con `alterzorder` (que NO cambia el foco de teclado), la capturamos, y al
+    final restauramos la ventana que estaba arriba. Las tileadas se capturan en
+    su sitio. Todo esto ocurre ANTES de abrir el overlay del task view."""
+    thumbs = {}
+    onscreen = [c for c in clients
+                if 'special:minimized' not in c.get('workspace', {}).get('name', '')]
+    floating = [c for c in onscreen if c.get('floating')]
+    tiled    = [c for c in onscreen if not c.get('floating')]
+
+    for c in tiled:
+        _grim_client(c, tmpdir, thumbs)
+
+    if floating:
+        # focusHistoryID menor == enfocada más recientemente == actualmente arriba.
+        floating.sort(key=lambda c: c.get('focusHistoryID', 999))
+        top = floating[0]
+        _grim_client(top, tmpdir, thumbs)            # ya está arriba: sin parpadeo
+        for c in floating[1:]:
+            alterzorder_top(c.get('address', ''))
+            time.sleep(0.07)                          # dejar que el compositor presente
+            _grim_client(c, tmpdir, thumbs)
+        alterzorder_top(top.get('address', ''))       # restaurar el orden original
+    return thumbs
+
+# ── CSS ───────────────────────────────────────────────────────────────────────
+
+CSS = b"""
+window {
+    background-color: rgba(13, 14, 24, 0.96);
+}
+scrolledwindow, viewport {
+    background-color: transparent;
+}
+.page-title {
+    font-size: 22px;
+    font-weight: bold;
+    color: #c0caf5;
+    margin-bottom: 4px;
+}
+.section-label {
+    font-size: 12px;
+    color: #565f89;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: 16px;
+    margin-bottom: 4px;
+}
+button.window-card {
+    background-color: rgba(36, 40, 59, 0.88);
+    border: 2px solid rgba(122, 162, 247, 0.20);
+    border-radius: 10px;
+    padding: 10px;
+    transition: border-color 80ms ease, background-color 80ms ease;
+}
+button.window-card:hover {
+    background-color: rgba(122, 162, 247, 0.16);
+    border-color: rgba(122, 162, 247, 0.75);
+}
+button.window-card:focus {
+    border-color: #7aa2f7;
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.35);
+}
+button.window-card.active-window {
+    border-color: rgba(158, 206, 106, 0.65);
+}
+button.window-card.active-window:focus {
+    border-color: #9ece6a;
+    box-shadow: 0 0 0 2px rgba(158, 206, 106, 0.4);
+}
+.thumb-box {
+    background-color: rgba(20, 22, 38, 0.9);
+    border-radius: 6px;
+}
+.card-title {
+    font-size: 12px;
+    color: #a9b1d6;
+    margin-top: 4px;
+}
+.workspace-badge {
+    font-size: 10px;
+    color: #7aa2f7;
+    background-color: rgba(122, 162, 247, 0.12);
+    border-radius: 3px;
+    padding: 1px 6px;
+}
+.minimized-badge {
+    font-size: 10px;
+    color: #7aa2f7;
+    background-color: rgba(122, 162, 247, 0.14);
+    border-radius: 3px;
+    padding: 1px 5px;
+    margin-top: 2px;
+}
+.card-number {
+    font-size: 11px;
+    font-weight: bold;
+    color: rgba(200, 210, 255, 0.9);
+    background-color: rgba(13, 14, 24, 0.75);
+    border-radius: 4px;
+    padding: 2px 6px;
+}
+.close-btn {
+    font-size: 11px;
+    font-weight: bold;
+    color: #1a1b26;
+    background-color: rgba(247, 118, 142, 0.85);
+    border-radius: 50%;
+    padding: 2px 5px;
+    opacity: 0;
+    transition: opacity 120ms ease;
+}
+button.window-card:hover .close-btn {
+    opacity: 1;
+}
+"""
+
+THUMB_W = 280
+THUMB_H = 157   # 16:9
+
+# ── window card widget ────────────────────────────────────────────────────────
+
+class WindowCard(Gtk.Button):
+    def __init__(self, client, thumb_path, active_addr, index):
+        super().__init__()
+        self.addr      = client['address']
+        self.ws_name   = client.get('workspace', {}).get('name', '')
+        ws_display     = client.get('workspace', {}).get('name', '')
+        self.minimized = 'special:minimized' in self.ws_name
+
+        self.add_css_class('window-card')
+        if self.addr == active_addr:
+            self.add_css_class('active-window')
+
+        title = client.get('title', '') or client.get('class', 'Unknown')
+        cls   = client.get('class', 'application')
+
+        outer = Gtk.Overlay()
+
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        vbox.set_size_request(THUMB_W, -1)
+
+        # ── thumbnail ──────────────────────────────────────────────────
+        thumb_box = Gtk.Box()
+        thumb_box.add_css_class('thumb-box')
+        thumb_box.set_size_request(THUMB_W, THUMB_H)
+        thumb_box.set_halign(Gtk.Align.FILL)
+        thumb_box.set_valign(Gtk.Align.FILL)
+        thumb_box.set_overflow(Gtk.Overflow.HIDDEN)
+
+        loaded = False
+        if thumb_path and os.path.exists(thumb_path):
+            try:
+                texture = Gdk.Texture.new_from_filename(thumb_path)
+                img = Gtk.Picture.new_for_paintable(texture)
+                img.set_content_fit(Gtk.ContentFit.COVER)
+                img.set_size_request(THUMB_W, THUMB_H)
+                thumb_box.append(img)
+                loaded = True
+            except Exception:
+                pass
+
+        if not loaded:
+            icon_box = Gtk.Box()
+            icon_box.set_halign(Gtk.Align.CENTER)
+            icon_box.set_valign(Gtk.Align.CENTER)
+            icon_box.set_size_request(THUMB_W, THUMB_H)
+            icon = Gtk.Image.new_from_icon_name(cls.lower())
+            if not icon.get_paintable():
+                icon = Gtk.Image.new_from_icon_name('application-x-executable')
+            icon.set_pixel_size(64)
+            icon_box.append(icon)
+            thumb_box.append(icon_box)
+
+        vbox.append(thumb_box)
+
+        # ── title + workspace badge ────────────────────────────────────
+        meta = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        meta.set_halign(Gtk.Align.FILL)
+
+        lbl = Gtk.Label(label=title)
+        lbl.set_ellipsize(3)
+        lbl.set_max_width_chars(30)
+        lbl.set_halign(Gtk.Align.START)
+        lbl.set_hexpand(True)
+        lbl.add_css_class('card-title')
+        meta.append(lbl)
+
+        if not self.minimized and ws_display and not ws_display.startswith('special:'):
+            ws_lbl = Gtk.Label(label=ws_display)
+            ws_lbl.add_css_class('workspace-badge')
+            ws_lbl.set_halign(Gtk.Align.END)
+            meta.append(ws_lbl)
+
+        vbox.append(meta)
+
+        if self.minimized:
+            badge = Gtk.Label(label='minimizado')
+            badge.set_halign(Gtk.Align.START)
+            badge.add_css_class('minimized-badge')
+            vbox.append(badge)
+
+        outer.set_child(vbox)
+
+        # ── number badge (top-left) ────────────────────────────────────
+        if index is not None and index < 9:
+            num = Gtk.Label(label=str(index + 1))
+            num.add_css_class('card-number')
+            num.set_halign(Gtk.Align.START)
+            num.set_valign(Gtk.Align.START)
+            num.set_margin_start(6)
+            num.set_margin_top(6)
+            outer.add_overlay(num)
+            outer.set_measure_overlay(num, False)
+            outer.set_clip_overlay(num, True)
+
+        # ── close button (top-right, appears on hover via CSS) ─────────
+        # Using a Label + CAPTURE-phase gesture so the outer Button's
+        # 'clicked' signal is NOT triggered when the X is pressed.
+        close_lbl = Gtk.Label(label='✕')
+        close_lbl.add_css_class('close-btn')
+        close_lbl.set_halign(Gtk.Align.END)
+        close_lbl.set_valign(Gtk.Align.START)
+        close_lbl.set_margin_end(8)
+        close_lbl.set_margin_top(8)
+        outer.add_overlay(close_lbl)
+        outer.set_measure_overlay(close_lbl, False)
+        outer.set_clip_overlay(close_lbl, True)
+
+        close_g = Gtk.GestureClick()
+        close_g.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        close_g.connect('pressed', self._on_close_pressed)
+        close_lbl.add_controller(close_g)
+
+        self.set_child(outer)
+
+    def _on_close_pressed(self, gesture, n_press, x, y):
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        hypr_close_window(self.addr)
+        # Remove card from FlowBox: self → FlowBoxChild → FlowBox
+        fbc = self.get_parent()
+        if fbc:
+            fb = fbc.get_parent()
+            if fb:
+                fb.remove(fbc)
+
+# ── main window ───────────────────────────────────────────────────────────────
+
+class TaskView(Gtk.ApplicationWindow):
+    def __init__(self, app, clients, thumbs, active_addr):
+        super().__init__(application=app, title='Task View')
+        self.set_decorated(False)
+        self.fullscreen()
+        self._cards = []
+
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        outer.set_margin_start(60);  outer.set_margin_end(60)
+        outer.set_margin_top(48);    outer.set_margin_bottom(40)
+        outer.set_valign(Gtk.Align.START)
+
+        header = Gtk.Label(label='Vista de tareas')
+        header.add_css_class('page-title')
+        header.set_halign(Gtk.Align.START)
+        outer.append(header)
+
+        visible   = [c for c in clients if 'special:minimized' not in c.get('workspace',{}).get('name','')]
+        minimized = [c for c in clients if 'special:minimized' in c.get('workspace',{}).get('name','')]
+
+        idx = 0
+        if visible:
+            outer.append(self._make_flow(visible, thumbs, active_addr, idx))
+            idx += len(visible)
+
+        if minimized:
+            sep = Gtk.Label(label='Minimizadas')
+            sep.add_css_class('section-label')
+            sep.set_halign(Gtk.Align.START)
+            outer.append(sep)
+            outer.append(self._make_flow(minimized, thumbs, active_addr, idx))
+
+        scroll.set_child(outer)
+        self.set_child(scroll)
+
+        key = Gtk.EventControllerKey()
+        key.connect('key-pressed', self._on_key)
+        self.add_controller(key)
+
+        # Background dismiss — use 'released' (not 'pressed') so the card's
+        # 'clicked' signal (also on release, fired first by inner widget via BUBBLE)
+        # can set target_addr before this handler quits the app.
+        bg_click = Gtk.GestureClick()
+        bg_click.connect('released', self._on_bg_click)
+        outer.add_controller(bg_click)
+
+        GLib.idle_add(self._focus_initial, active_addr)
+
+    def _on_bg_click(self, gesture, n_press, x, y):
+        # Only dismiss if no card was clicked (a card click sets target_addr first)
+        if not self.get_application().target_addr:
+            self.get_application().quit()
+
+    def _focus_initial(self, active_addr):
+        for card in self._cards:
+            if card.addr == active_addr:
+                card.grab_focus()
+                return GLib.SOURCE_REMOVE
+        if self._cards:
+            self._cards[0].grab_focus()
+        return GLib.SOURCE_REMOVE
+
+    def _make_flow(self, clients, thumbs, active_addr, start_idx):
+        flow = Gtk.FlowBox()
+        flow.set_max_children_per_line(4)
+        flow.set_min_children_per_line(1)
+        flow.set_selection_mode(Gtk.SelectionMode.NONE)
+        flow.set_row_spacing(14)
+        flow.set_column_spacing(14)
+        for i, client in enumerate(clients):
+            addr  = client.get('address', '')
+            thumb = thumbs.get(addr)
+            card  = WindowCard(client, thumb, active_addr, start_idx + i)
+            card.connect('clicked', self._on_card)
+            flow.append(card)
+            self._cards.append(card)
+        return flow
+
+    def _on_card(self, card):
+        app = self.get_application()
+        app.target_addr = card.addr
+        app.target_ws   = card.ws_name
+        app.quit()
+
+    def _on_key(self, ctrl, keyval, *_):
+        if keyval == Gdk.KEY_Escape:
+            self.get_application().quit()
+            return True
+        # 1–9: instant-pick window by number badge
+        if Gdk.KEY_1 <= keyval <= Gdk.KEY_9:
+            idx = keyval - Gdk.KEY_1
+            if idx < len(self._cards):
+                card = self._cards[idx]
+                app  = self.get_application()
+                app.target_addr = card.addr
+                app.target_ws   = card.ws_name
+                app.quit()
+            return True
+        return False
+
+
+class App(Gtk.Application):
+    def __init__(self, clients, thumbs, active_addr):
+        super().__init__(application_id='com.hyprland.taskview')
+        self.clients     = clients
+        self.thumbs      = thumbs
+        self.active_addr = active_addr
+        self.target_addr = None
+        self.target_ws   = None
+
+    def do_activate(self):
+        win = TaskView(self, self.clients, self.thumbs, self.active_addr)
+        win.present()
+
+
+# ── entry point ───────────────────────────────────────────────────────────────
+
+if __name__ == '__main__':
+    clients = get_clients()
+    if not clients:
+        sys.exit(0)
+
+    active_addr = get_active_window_addr()
+
+    tmpdir = tempfile.mkdtemp(prefix='taskview-')
+    try:
+        # Screenshots BEFORE GTK overlay — otherwise grim captures the overlay.
+        # Occluded floating windows are raised momentarily via alterzorder so each
+        # thumbnail shows its real content (see capture_thumbnails).
+        thumbs = capture_thumbnails(clients, tmpdir)
+
+        app = App(clients, thumbs, active_addr)
+        app.run([])
+
+        # Focus AFTER app.run() — GTK window is fully gone, no race condition
+        if app.target_addr:
+            focus_window(app.target_addr, app.target_ws)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)

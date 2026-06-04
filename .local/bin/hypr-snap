@@ -1,0 +1,129 @@
+#!/bin/bash
+# Snap windows like Windows - Win+Arrows
+# fullscreen values: 0=normal | 1=maximizado | 2=F11
+
+DIRECTION="$1"
+
+get_win() { hyprctl activewindow -j 2>/dev/null; }
+
+exit_fullscreen() {
+    local fs="$1"
+    [ "$fs" = "2" ] && hyprctl dispatch fullscreen 0 && sleep 0.1
+    [ "$fs" = "1" ] && hyprctl dispatch fullscreen 1 && sleep 0.1
+}
+
+get_usable_area() {
+    hyprctl monitors -j | python3 -c "
+import json, sys
+m = next(m for m in json.load(sys.stdin) if m['focused'])
+r = m['reserved']  # [left, top, right, bottom]
+print(m['width'], m['height'], m['x'], m['y'], r[1], r[2], r[3], r[0])
+"
+}
+
+restore_last_minimized() {
+    local current_ws
+    current_ws=$(hyprctl activeworkspace -j | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+    local addr
+    addr=$(hyprctl clients -j | python3 -c "
+import json, sys
+clients = [c for c in json.load(sys.stdin) if c.get('workspace',{}).get('name') == 'special:minimized']
+print(clients[-1]['address'] if clients else '')
+")
+    if [ -n "$addr" ]; then
+        hyprctl dispatch movetoworkspace "$current_ws,address:$addr"
+        sleep 0.05
+        hyprctl dispatch focuswindow "address:$addr"
+    fi
+}
+
+WIN_JSON=$(get_win)
+FS=$(echo "$WIN_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('fullscreen', 0))")
+ACTIVE_CLASS=$(echo "$WIN_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('class',''))")
+ACTIVE_ADDR=$(echo "$WIN_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('address',''))")
+
+case "$DIRECTION" in
+
+    up)
+        exit_fullscreen "$FS"
+
+        WIN_JSON=$(get_win)
+        IS_FLOATING=$(echo "$WIN_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('floating', False))")
+
+        [ "$IS_FLOATING" = "False" ] && hyprctl dispatch togglefloating && sleep 0.05
+
+        read W H MX MY TOP RIGHT BOTTOM LEFT < <(get_usable_area)
+        USE_X=$((MX + LEFT))
+        USE_Y=$((MY + TOP))
+        USE_W=$((W - LEFT - RIGHT))
+        USE_H=$((H - TOP - BOTTOM))
+
+        hyprctl --batch "dispatch resizeactive exact $USE_W $USE_H ; dispatch moveactive exact $USE_X $USE_Y"
+        hyprctl dispatch bringactivetotop
+        ;;
+
+    down)
+        if [ -n "$ACTIVE_CLASS" ] && [ "$ACTIVE_CLASS" != "" ]; then
+            # Hay ventana activa → minimizar
+            exit_fullscreen "$FS"
+            hyprctl dispatch movetoworkspacesilent "special:minimized,address:$ACTIVE_ADDR"
+            sleep 0.05
+            # Cerrar el overlay del special workspace sin importar el estado
+            hyprctl dispatch closespecialworkspace minimized 2>/dev/null
+            hyprctl activewindow -j | python3 -c "import json,sys; print(json.load(sys.stdin).get('class','(nada)'))"
+        else
+            # Workspace vacío → restaurar última minimizada
+            restore_last_minimized
+        fi
+        ;;
+
+    restore)
+        restore_last_minimized
+        ;;
+
+    left|right)
+        exit_fullscreen "$FS"
+
+        WIN_JSON=$(get_win)
+        IS_FLOATING=$(echo "$WIN_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('floating', False))")
+        ACTIVE_ADDR=$(echo "$WIN_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('address',''))")
+
+        [ "$IS_FLOATING" = "False" ] && hyprctl dispatch togglefloating && sleep 0.05
+
+        read W H MX MY TOP RIGHT BOTTOM LEFT < <(get_usable_area)
+        USE_X=$((MX + LEFT))
+        USE_Y=$((MY + TOP))
+        USE_W=$((W - LEFT - RIGHT))
+        USE_H=$((H - TOP - BOTTOM))
+        HALF_W=$((USE_W / 2))
+        MID_X=$((USE_X + HALF_W))
+
+        [ "$DIRECTION" = "left" ] && TARGET_X=$USE_X  || TARGET_X=$MID_X
+        [ "$DIRECTION" = "left" ] && OTHER_X=$MID_X   || OTHER_X=$USE_X
+
+        # Buscar ventana ya snapeada en el lado destino para swap
+        SWAP_ADDR=$(hyprctl clients -j | python3 -c "
+import json, sys
+clients = json.load(sys.stdin)
+active = '$ACTIVE_ADDR'
+target_x = $TARGET_X
+half = $HALF_W
+for c in clients:
+    addr = c.get('address','')
+    if addr == active: continue
+    if 'special' in c.get('workspace',{}).get('name',''): continue
+    cx = c.get('at',[0,0])[0]
+    cw = c.get('size',[0,0])[0]
+    if abs(cw - half) < 30 and abs(cx - target_x) < 30:
+        print(addr); break
+print('')
+")
+
+        hyprctl --batch "dispatch resizeactive exact $HALF_W $USE_H ; dispatch moveactive exact $TARGET_X $USE_Y"
+
+        if [ -n "$SWAP_ADDR" ]; then
+            sleep 0.05
+            hyprctl --batch "dispatch resizewindowpixel exact $HALF_W $USE_H,address:$SWAP_ADDR ; dispatch movewindowpixel exact $OTHER_X $USE_Y,address:$SWAP_ADDR"
+        fi
+        ;;
+esac

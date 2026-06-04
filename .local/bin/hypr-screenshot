@@ -1,0 +1,11 @@
+#!/bin/bash
+# Toma captura de región.
+# - CLIPBOARD  → imagen PNG  (para pegar en browser/apps con Ctrl+V)
+# - PRIMARY     → ruta del archivo (para pegar con clic medio en Claude Code)
+
+FILEPATH=$(omarchy-capture-screenshot region 2>/dev/null)
+
+if [ -n "$FILEPATH" ] && [ -f "$FILEPATH" ]; then
+    # Poner la ruta como texto en el portapapeles primario (clic medio)
+    printf '%s' "$FILEPATH" | wl-copy --primary
+fi

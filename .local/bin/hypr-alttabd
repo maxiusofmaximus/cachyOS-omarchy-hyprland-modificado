@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""hypr-alttabd — Daemon residente del Alt+Tab.
+
+Mantiene Python + GTK cargados en memoria para abrir el overlay AL INSTANTE
+(elimina el arranque en frío de ~50-100ms que tenía el diseño anterior de
+"lanzar un proceso por pulsación").
+
+  - Arranca con la sesión (autostart.conf: `exec-once = hypr-alttabd`).
+  - Escucha en un socket UNIX y crea/destruye un OverlayWindow por invocación.
+  - El cliente rápido `hypr-alttab` (socat) envía: next | prev | close | quit.
+
+LD_PRELOAD de gtk4-layer-shell debe estar puesto por el envoltorio que lo lanza
+(autostart usa `uwsm-app -- env LD_PRELOAD=... hypr-alttabd`).
+"""
+
+import gi
+gi.require_version('Gtk', '4.0')
+gi.require_version('Gdk', '4.0')
+gi.require_version('Gtk4LayerShell', '1.0')
+from gi.repository import Gtk, GLib, Gio
+import os, sys, socket as _socket
+
+sys.path.insert(0, os.path.expanduser('~/.local/lib/hypr'))
+import alttab_overlay
+from alttab_overlay import OverlayWindow
+
+INSTANCE = os.environ.get('HYPRLAND_INSTANCE_SIGNATURE', 'default')
+SOCK_PATH = f'/tmp/hypr-alttab-{INSTANCE}.sock'
+
+
+class AltTabDaemon(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id='io.hypr.alttabd',
+                         flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.overlay = None
+        self._server = None
+        self._io_watch = None
+
+    def do_activate(self):
+        self.hold()                 # seguir vivo aunque no haya ventanas
+        alttab_overlay.install_css()
+        self._setup_socket()
+
+    def do_shutdown(self):
+        if self._io_watch:
+            GLib.source_remove(self._io_watch)
+        if self._server:
+            self._server.close()
+        try:
+            os.unlink(SOCK_PATH)
+        except OSError:
+            pass
+        Gtk.Application.do_shutdown(self)
+
+    # ── Socket IPC ───────────────────────────────────────────────────────────────
+
+    def _setup_socket(self):
+        try:
+            os.unlink(SOCK_PATH)
+        except OSError:
+            pass
+        self._server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        self._server.bind(SOCK_PATH)
+        self._server.listen(8)
+        self._server.setblocking(False)
+        self._io_watch = GLib.io_add_watch(
+            self._server.fileno(), GLib.IOCondition.IN, self._on_conn)
+
+    def _on_conn(self, fd, condition):
+        try:
+            conn, _ = self._server.accept()
+            data = conn.recv(64).decode().strip()
+            conn.close()
+        except OSError:
+            return True
+        for line in data.splitlines():
+            self._handle(line.strip())
+        return True
+
+    def _handle(self, cmd):
+        if cmd in ('next', 'prev'):
+            if self.overlay is None:
+                self.overlay = OverlayWindow(
+                    self,
+                    initial_direction=cmd,
+                    on_closed=self._on_overlay_closed)
+                self.overlay.show_overlay()
+            else:
+                self.overlay.cycle(1 if cmd == 'next' else -1)
+        elif cmd == 'close':
+            if self.overlay is not None:
+                self.overlay.confirm_and_close()
+        elif cmd == 'quit':
+            self.quit()
+
+    def _on_overlay_closed(self):
+        self.overlay = None
+
+
+if __name__ == '__main__':
+    AltTabDaemon().run(None)

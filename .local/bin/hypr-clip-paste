@@ -1,0 +1,26 @@
+#!/bin/bash
+source ~/.local/lib/hypr/clip-lib.sh
+
+WIN_CLASS=$(active_window_class)
+
+if is_terminal "$WIN_CLASS"; then
+    # Si hay imagen en clipboard → guardar PNG y poner la ruta como texto
+    if wl-paste --list-types 2>/dev/null | grep -q "image/png"; then
+        FILEPATH="$HOME/Imágenes/screenshot-$(date +'%Y-%m-%d_%H-%M-%S').png"
+        wl-paste -t image/png > "$FILEPATH" 2>/dev/null
+        if [ -s "$FILEPATH" ]; then
+            printf '%s' "$FILEPATH" | wl-copy
+            # Esperar a que el clipboard refleje el TEXTO antes de pegar; si no,
+            # se pegaría la imagen vieja (race: wl-copy es asíncrono).
+            poll_until 300 bash -c \
+                '! wl-paste --list-types 2>/dev/null | grep -q "image/png"'
+        fi
+    fi
+
+    # Ctrl+Shift+V: Alacritty lo mapea a Paste
+    inject_key_bypassed 29:1 42:1 47:1 47:0 42:0 29:0
+
+else
+    # App gráfica: inyectar Ctrl+V real sin re-triggear el binding
+    inject_key_bypassed 29:1 47:1 47:0 29:0
+fi

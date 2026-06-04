@@ -1,0 +1,59 @@
+#!/bin/bash
+# Windows-style Task View (Win+Tab): persistent panel of all open windows
+
+CSS="$HOME/.config/wofi/window-switcher.css"
+
+WINDOWS=$(hyprctl clients -j | python3 -c "
+import json, sys
+clients = json.load(sys.stdin)
+result = []
+for c in clients:
+    ws = c.get('workspace', {}).get('name', '')
+    title = c.get('title', '') or c.get('class', 'Unknown')
+    addr = c.get('address', '')
+    if 'special:minimized' in ws:
+        icon = '󰖲'
+        ws_label = 'minimizado'
+    else:
+        icon = '󰖯'
+        ws_label = ws if ws else '?'
+    title_short = title[:60] + '…' if len(title) > 60 else title
+    result.append(f'{icon}  {title_short}    [{ws_label}]|{addr}')
+for r in result:
+    print(r)
+")
+
+[ -z "$WINDOWS" ] && exit 0
+
+SELECTED=$(echo "$WINDOWS" | wofi \
+    --dmenu \
+    --prompt "  Ventanas abiertas" \
+    --insensitive \
+    --width 750 \
+    --height 520 \
+    --style "$CSS" \
+    2>/dev/null)
+
+[ -z "$SELECTED" ] && exit 0
+
+ADDR=$(echo "$SELECTED" | awk -F'|' '{print $2}')
+[ -z "$ADDR" ] && exit 0
+
+IS_MIN=$(hyprctl clients -j | python3 -c "
+import json, sys
+for c in json.load(sys.stdin):
+    if c.get('address') == '$ADDR':
+        ws = c.get('workspace', {}).get('name', '')
+        print('yes' if 'special:minimized' in ws else 'no')
+        sys.exit(0)
+print('no')
+")
+
+if [ "$IS_MIN" = "yes" ]; then
+    CWS=$(hyprctl activeworkspace -j | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+    hyprctl dispatch movetoworkspace "$CWS,address:$ADDR"
+    sleep 0.08
+fi
+
+hyprctl dispatch focuswindow "address:$ADDR"
+hyprctl dispatch bringactivetotop

@@ -1,0 +1,21 @@
+#!/bin/bash
+source ~/.local/lib/hypr/clip-lib.sh
+
+WIN_CLASS=$(active_window_class)
+
+if is_terminal "$WIN_CLASS"; then
+    BEFORE=$(wl-paste --no-newline 2>/dev/null | md5sum)
+
+    # Intenta copiar selección activa (Ctrl+Shift+C en Alacritty)
+    inject_key_bypassed 29:1 42:1 46:1 46:0 42:0 29:0
+
+    # Si el clipboard no cambió en 150ms → no había selección → SIGINT
+    if ! wait_clipboard_change "$BEFORE"; then
+        inject_key_bypassed 29:1 46:1 46:0 29:0
+    fi
+
+else
+    # App gráfica: copiar selección de PRIMARY al CLIPBOARD
+    PRIMARY=$(wl-paste --primary --no-newline 2>/dev/null)
+    [ -n "$PRIMARY" ] && printf '%s' "$PRIMARY" | wl-copy
+fi
