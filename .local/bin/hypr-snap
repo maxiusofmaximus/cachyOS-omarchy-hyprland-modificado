@@ -64,13 +64,12 @@ case "$DIRECTION" in
 
     down)
         if [ -n "$ACTIVE_CLASS" ] && [ "$ACTIVE_CLASS" != "" ]; then
-            # Hay ventana activa → minimizar
+            # Hay ventana activa → minimizar.
+            # movetoworkspacesilent oculta la ventana SIN mostrar el overlay del
+            # workspace especial, así que no hay que cerrar nada después (el viejo
+            # `closespecialworkspace` no existe en Hyprland → "Invalid dispatcher").
             exit_fullscreen "$FS"
             hyprctl dispatch movetoworkspacesilent "special:minimized,address:$ACTIVE_ADDR"
-            sleep 0.05
-            # Cerrar el overlay del special workspace sin importar el estado
-            hyprctl dispatch closespecialworkspace minimized 2>/dev/null
-            hyprctl activewindow -j | python3 -c "import json,sys; print(json.load(sys.stdin).get('class','(nada)'))"
         else
             # Workspace vacío → restaurar última minimizada
             restore_last_minimized
