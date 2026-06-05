@@ -1,20 +1,5 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "theme": "system",
-  "autoupdate": false,
-  "provider": {
-    "nvidia": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "NVIDIA NIM",
-      "options": {
-        "baseURL": "https://integrate.api.nvidia.com/v1",
-        "apiKey": "{env:NVIDIA_API_KEY}"
-      },
-      "models": {
-        "qwen/qwen3-coder-480b-a35b-instruct": { "name": "Qwen3-Coder 480B (NIM)" },
-        "deepseek-ai/deepseek-r1": { "name": "DeepSeek-R1 (NIM)" },
-        "meta/llama-3.3-70b-instruct": { "name": "Llama 3.3 70B (NIM)" }
-      }
-    }
-  }
+  "autoupdate": false
 }

@@ -1,5 +1,10 @@
+# secrets — nunca commitear
+*api_key*
 *.bak.*
-__pycache__/
+.config/opencode/config.json
+*.key
 *.pyc
-target/
+__pycache__/
 rust/*/target/
+secrets*
+target/
