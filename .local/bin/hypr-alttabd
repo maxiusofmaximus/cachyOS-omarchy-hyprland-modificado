@@ -97,5 +97,21 @@ class AltTabDaemon(Gtk.Application):
         self.overlay = None
 
 
+def _already_running():
+    """True si ya hay un daemon vivo escuchando el socket (evita duplicados que
+    se roben el socket entre sí)."""
+    try:
+        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        s.settimeout(0.3)
+        s.connect(SOCK_PATH)
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
 if __name__ == '__main__':
+    if _already_running():
+        print('hypr-alttabd: ya hay una instancia corriendo, salgo', file=sys.stderr)
+        sys.exit(0)
     AltTabDaemon().run(None)

@@ -1,0 +1,38 @@
+general.import = [ "~/.config/omarchy/current/theme/alacritty.toml" ]
+
+[env]
+TERM = "xterm-256color"
+
+[terminal]
+osc52 = "CopyPaste"
+
+[font]
+normal = { family = "JetBrainsMono Nerd Font", style = "Regular" }
+bold = { family = "JetBrainsMono Nerd Font", style = "Bold" }
+italic = { family = "JetBrainsMono Nerd Font", style = "Italic" }
+size = 9
+
+[window]
+padding.x = 14
+padding.y = 14
+decorations = "None"
+
+[keyboard]
+bindings = [
+{ key = "Insert",   mods = "Shift",         action = "Paste" },
+{ key = "Insert",   mods = "Control",        action = "Copy" },
+{ key = "C",        mods = "Control|Shift",  action = "Copy" },
+{ key = "V",        mods = "Control|Shift",  action = "Paste" },
+# Ctrl+V nativo = Paste (sin inyección ydotool → nunca produce "VVVVV")
+{ key = "V",        mods = "Control",        action = "Paste" }
+]
+
+[selection]
+# Copiar automáticamente al portapapeles lo que selecciones (estilo Windows)
+save_to_clipboard = true
+
+[mouse]
+bindings = [
+  # Clic derecho = pegar del portapapeles
+  { mouse = "Right", action = "Paste" },
+]

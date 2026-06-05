@@ -54,6 +54,14 @@ def focus_window(addr: str):
     subprocess.run(['hyprctl', '--batch',
         f'dispatch focuswindow address:{addr} ; dispatch bringactivetotop'],
         capture_output=True)
+    # Si la ventana enfocada es TILEADA, las flotantes maximizadas la taparían:
+    # en Hyprland las flotantes se dibujan por encima de las tileadas y
+    # bringactivetotop no cambia eso. La subimos al frente con snap up (flujo
+    # estilo Windows: todo es flotante-maximizado), igual que _restore_and_focus.
+    win = json.loads(subprocess.run(
+        ['hyprctl', 'activewindow', '-j'], capture_output=True, text=True).stdout or '{}')
+    if not win.get('floating', False):
+        subprocess.run(['hypr-snap', 'up'], capture_output=True)
 
 
 def get_icon_image(class_name: str) -> Gtk.Image:
