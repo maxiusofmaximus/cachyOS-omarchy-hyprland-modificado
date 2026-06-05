@@ -1,0 +1,17 @@
+[package]
+name = "hypr-fancyzones"
+version = "0.1.0"
+edition = "2021"
+description = "FancyZones / Snap Layouts para Hyprland: snap de ventanas a zonas definidas en JSON"
+
+[[bin]]
+name = "hypr-fancyzones"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

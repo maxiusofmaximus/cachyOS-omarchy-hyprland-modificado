@@ -55,23 +55,27 @@ if [ "$DRY" != 1 ]; then
     chmod +x "$REPO"/.local/bin/* 2>/dev/null || true
 fi
 
-# Compilar y enlazar las herramientas en Rust (hypr-winshot: miniaturas vivas).
-# Si no hay cargo, se omite y hypr-taskview cae automáticamente a grim+alterzorder.
-WINSHOT_SRC="$REPO/rust/hypr-winshot"
-WINSHOT_BIN="$WINSHOT_SRC/target/release/hypr-winshot"
-if [ -d "$WINSHOT_SRC" ]; then
-    if [ "$DRY" = 1 ]; then
-        log "BUILD   cargo build --release ($WINSHOT_SRC) y LINK ~/.local/bin/hypr-winshot"
-    elif command -v cargo >/dev/null 2>&1; then
-        log ""
-        log "Compilando hypr-winshot (Rust)…"
-        ( cd "$WINSHOT_SRC" && cargo build --release ) \
-            && ln -sf "$WINSHOT_BIN" "$HOME/.local/bin/hypr-winshot" \
-            && log "link:    $HOME/.local/bin/hypr-winshot -> $WINSHOT_BIN" \
-            || log "aviso:   falló la compilación de hypr-winshot (taskview usará grim)"
-    else
-        log "aviso:   cargo no encontrado — omito hypr-winshot (taskview usará grim)"
-    fi
+# Compilar y enlazar TODAS las herramientas en Rust de rust/* (hypr-winshot,
+# hypr-fancyzones, …). Si no hay cargo, se omite (taskview cae a grim, y los
+# binds de fancyzones simplemente no harán nada hasta compilarlo).
+if [ -d "$REPO/rust" ]; then
+    for proj in "$REPO"/rust/*/; do
+        [ -f "$proj/Cargo.toml" ] || continue
+        name="$(basename "$proj")"
+        bin="$proj/target/release/$name"
+        if [ "$DRY" = 1 ]; then
+            log "BUILD   cargo build --release ($proj) y LINK ~/.local/bin/$name"
+        elif command -v cargo >/dev/null 2>&1; then
+            log ""
+            log "Compilando $name (Rust)…"
+            ( cd "$proj" && cargo build --release ) \
+                && ln -sf "$bin" "$HOME/.local/bin/$name" \
+                && log "link:    $HOME/.local/bin/$name -> $bin" \
+                || log "aviso:   falló la compilación de $name"
+        else
+            log "aviso:   cargo no encontrado — omito $name"
+        fi
+    done
 fi
 
 log ""
