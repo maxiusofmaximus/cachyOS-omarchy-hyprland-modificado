@@ -1,0 +1,27 @@
+#!/bin/bash
+# hypr-clip-history — Historial de portapapeles estilo Windows (Win+V).
+# Usa cliphist (almacén) + wofi (selector). El watcher se lanza en autostart:
+#   exec-once = wl-paste --watch cliphist store
+#
+# Binding:  bind = SUPER, V, exec, hypr-clip-history
+#
+# Tras elegir, el contenido vuelve al CLIPBOARD; pégalo con Ctrl+V o clic derecho.
+
+CSS="$HOME/.config/wofi/window-switcher.css"   # reutiliza el estilo existente
+
+if ! command -v cliphist >/dev/null 2>&1; then
+    notify-send "Historial de portapapeles" "Falta 'cliphist'. Instálalo: omarchy pkg add cliphist" 2>/dev/null
+    exit 1
+fi
+
+CHOICE=$(cliphist list | wofi \
+    --dmenu \
+    --prompt "  Portapapeles" \
+    --insensitive \
+    --width 750 --height 520 \
+    ${CSS:+--style "$CSS"} \
+    2>/dev/null)
+
+[ -z "$CHOICE" ] && exit 0
+
+printf '%s' "$CHOICE" | cliphist decode | wl-copy

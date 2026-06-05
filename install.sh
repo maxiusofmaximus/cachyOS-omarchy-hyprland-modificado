@@ -55,6 +55,25 @@ if [ "$DRY" != 1 ]; then
     chmod +x "$REPO"/.local/bin/* 2>/dev/null || true
 fi
 
+# Compilar y enlazar las herramientas en Rust (hypr-winshot: miniaturas vivas).
+# Si no hay cargo, se omite y hypr-taskview cae automáticamente a grim+alterzorder.
+WINSHOT_SRC="$REPO/rust/hypr-winshot"
+WINSHOT_BIN="$WINSHOT_SRC/target/release/hypr-winshot"
+if [ -d "$WINSHOT_SRC" ]; then
+    if [ "$DRY" = 1 ]; then
+        log "BUILD   cargo build --release ($WINSHOT_SRC) y LINK ~/.local/bin/hypr-winshot"
+    elif command -v cargo >/dev/null 2>&1; then
+        log ""
+        log "Compilando hypr-winshot (Rust)…"
+        ( cd "$WINSHOT_SRC" && cargo build --release ) \
+            && ln -sf "$WINSHOT_BIN" "$HOME/.local/bin/hypr-winshot" \
+            && log "link:    $HOME/.local/bin/hypr-winshot -> $WINSHOT_BIN" \
+            || log "aviso:   falló la compilación de hypr-winshot (taskview usará grim)"
+    else
+        log "aviso:   cargo no encontrado — omito hypr-winshot (taskview usará grim)"
+    fi
+fi
+
 log ""
 log "Hecho. Enlazados: $linked · respaldados: $backed · sin cambios: $skipped"
 log ""

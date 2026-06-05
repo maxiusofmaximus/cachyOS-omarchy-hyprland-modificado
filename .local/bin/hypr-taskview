@@ -71,19 +71,45 @@ def _grim_client(client, tmpdir, thumbs):
     if screenshot(x, y, w, h, path):
         thumbs[addr] = path
 
+def _winshot_client(client, tmpdir, thumbs):
+    """Captura VIVA por ventana vía hypr-winshot (Rust + hyprland_toplevel_export_v1).
+    Equivalente a DwmRegisterThumbnail: contenido real de la ventana aunque esté
+    ocluida, sin tocar z-order ni provocar parpadeo. Devuelve True si tuvo éxito."""
+    addr = client.get('address', '')
+    path = os.path.join(tmpdir, f'{addr}.png')
+    try:
+        r = subprocess.run(['hypr-winshot', addr, path], capture_output=True, timeout=2)
+    except Exception:
+        return False
+    if r.returncode == 0 and os.path.exists(path) and os.path.getsize(path) > 100:
+        thumbs[addr] = path
+        return True
+    return False
+
 def capture_thumbnails(clients, tmpdir):
     """Thumbnails reales por ventana.
 
-    grim captura REGIONES de pantalla, no el framebuffer de cada ventana. En el
-    flujo estilo Windows las ventanas flotantes están maximizadas y se solapan en
-    la misma región, así que grim sobre su geometría capturaría siempre la de
-    encima (thumbnails idénticos). Para evitarlo subimos cada flotante al frente
-    con `alterzorder` (que NO cambia el foco de teclado), la capturamos, y al
-    final restauramos la ventana que estaba arriba. Las tileadas se capturan en
-    su sitio. Todo esto ocurre ANTES de abrir el overlay del task view."""
+    Preferimos `hypr-winshot` (Rust): captura el framebuffer vivo de cada ventana
+    por dirección, sin parpadeo (como el DWM de Windows). Si no está disponible,
+    caemos al método con `grim`: grim captura REGIONES de pantalla, no ventanas,
+    y como las flotantes se solapan, hay que subir cada una con `alterzorder`
+    (sin cambiar el foco), capturarla, y restaurar el orden. Todo ANTES de abrir
+    el overlay."""
     thumbs = {}
     onscreen = [c for c in clients
                 if 'special:minimized' not in c.get('workspace', {}).get('name', '')]
+
+    # ── Camino preferido: hypr-winshot (vivo, sin parpadeo) ──
+    if shutil.which('hypr-winshot'):
+        pending = []
+        for c in onscreen:
+            if not _winshot_client(c, tmpdir, thumbs):
+                pending.append(c)   # esta ventana falló → fallback grim
+        if not pending:
+            return thumbs
+        onscreen = pending          # solo las que faltaron pasan al fallback
+
+    # ── Fallback: grim + alterzorder ──
     floating = [c for c in onscreen if c.get('floating')]
     tiled    = [c for c in onscreen if not c.get('floating')]
 

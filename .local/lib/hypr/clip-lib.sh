@@ -41,8 +41,13 @@ inject_key_bypassed() {
         return 1
     fi
     sleep 0.01                              # asegurar submap activo antes de inyectar
-    ydotool key --key-delay 6 "$@"
-    ydotool key --key-delay 1 29:0 42:0 46:0 47:0   # red de seguridad: soltar todo
+    ydotool key --key-delay 1 29:0 42:0 46:0 47:0   # auto-cura: soltar teclas atascadas previas
+    # Una sola invocación de ydotool: los eventos se procesan en orden atómico por
+    # ydotoold. Al final soltamos SIEMPRE Ctrl/Shift/C/V (un "up" sobre una tecla
+    # no presionada es inocuo) para que nunca quede una tecla virtual atascada
+    # autorepitiendo ("VVVVV"). Hacerlo en la misma llamada evita la carrera entre
+    # dos `ydotool key` y el `submap reset`.
+    ydotool key --key-delay 6 "$@" 47:0 46:0 42:0 29:0
     sleep 0.03                              # drenar eventos inyectados antes del reset
     hyprctl dispatch submap reset
 }

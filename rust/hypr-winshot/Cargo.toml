@@ -1,0 +1,23 @@
+[package]
+name = "hypr-winshot"
+version = "0.1.0"
+edition = "2021"
+description = "Captura el framebuffer vivo de una ventana de Hyprland vía hyprland_toplevel_export_v1 (miniaturas sin parpadeo, equivalente a DwmRegisterThumbnail)"
+
+[[bin]]
+name = "hypr-winshot"
+path = "src/main.rs"
+
+[dependencies]
+wayland-client = "0.31"
+wayland-scanner = "0.31"
+wayland-backend = "0.3"
+bitflags = "2"
+image = { version = "0.25", default-features = false, features = ["png"] }
+memmap2 = "0.9"
+tempfile = "3"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
